@@ -1,0 +1,11 @@
+name: nlp_predict2
+title: shiny_nlp_separate
+account: jshomaker1
+server: shinyapps.io
+appId: 162935
+bundleId: 742706
+url: https://jshomaker1.shinyapps.io/nlp_predict2/
+when: 1489243591.10383
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: ngram_builder.html|ngram_builder.Rmd|nlp_report1.html|nlp_report1.Rmd|predict_model_v1.Rmd|predict_model_v1a.html|predict_model_v1b.html

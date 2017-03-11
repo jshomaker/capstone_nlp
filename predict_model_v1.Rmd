@@ -1,0 +1,239 @@
+---
+title: "JHDS predict_model_v1.Rmd"
+author: "John Shomaker"
+date: "1/21/2017"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+### 1. Introduction
+
+This report is the second stage in the Johns Hopkins Data Science Capstone program. The Capstone focuses on the data science of natural language processing ("NLP"), leveraging the entire course's methodologies and learnings to disect the SwiftKey text dataset. SwiftKey is in the business of mobile applications and technologies, one of which is a feature that predicts type-ahead for mobile texters.
+
+The high-level challenge is to create a practical and reliable word prediction application in shiny, based on a cleaned dataset of text. The source text is a combination of large volumes of blogs, news articles, and Twitter posts (tweets).
+
+This script is a preliminary model to test the [Katz-Backoff](https://en.wikipedia.org/wiki/Katz%27s_back-off_model) (adaptation of [Markov Chains](https://en.wikipedia.org/wiki/Markov_chain)) method of predicting the 'next word', if a user provides an input of one or more words. The input is cleansed, and depending on the length of the input n, an n+1-gram is tested for matches. In short, the input is compared against the left n words of the n-gram. If matches aren't found, the input eliminates the left most word, and backs off to compare against the next n-gram (i.e., ideally start with the 4-gram, then try the 3-gram, and then try the 2-gram).
+
+Various articles also discuss the concept of "frequency of frequencies": in other words, if, in a 2-gram "go to" shows up 32 times in the 2_gram_count, then how many 2_grams have a count of 32. I compute and plot these statistics on a log(y) scale, which highlights thin (steep descent) or broad (flat descent) each potential n-gram combination exists.
+
+Note: predict_model_v1.Rmd produces:
+
+  predict_model_v1a.Html (output of model results based on ngrams without freq = 1)
+  predict_model_v1b.Html (output of model results based on ngrams with freq = 1)
+
+
+```{r loadngrams}
+
+## install.packages("stringr") # shortcut for word counting
+## install.packages("tm") # text libraries
+## install.packages("qdap")
+## install.packages("SnowballC") # shortcut for stemming in corpus
+## install.packages("qdapRegex") # shortcut to clean up twitter formats
+## install.packages("ggplot2") # plotting
+## install.packages("cowplot") # create 2x2 paneled ggplots
+## install.packages("plyr") # dataset manipulation
+
+
+library(stringr)
+library(tm)
+library(qdap)
+library(qdapRegex)
+library(SnowballC)
+library(ggplot2)
+library(cowplot)
+library(plyr)
+
+## Load frequency tables for 1-, 2-, 3-, and 4-gram (without freq = 1 for speed)
+
+US_directory <- "/Users/john/DropBox/JHDS/Capstone/final/en_US"
+main_directory <- "/Users/john/DropBox/JHDS/Capstone"
+
+# uni <- read.table(paste(US_directory,"unigram_ctx.txt", sep="/"), header = TRUE)
+bi <- read.table(paste(US_directory,"bigram_ctx.txt", sep="/"), header = TRUE)
+tri <- read.table(paste(US_directory,"trigram_ctx.txt", sep="/"), header = TRUE)
+quad <- read.table(paste(US_directory,"quadgram_ctx.txt", sep="/"), header = TRUE)
+
+```
+
+### 2. Data Cleansing (Mirrors Dataset Cleansing)
+
+```{r input_cleanse, warning = FALSE}
+
+# clean <- tolower(input) # convert text to lowercase
+# clean <- str_replace_all(clean, pattern="[[:punct:]]","") # remove punctuation
+# clean <- removeNumbers(clean)
+# clean <- str_replace_all(clean, pattern="\\s+", " ") # convert whitespace to a space
+# clean <- stemDocument(clean) 
+    
+cleanse_input <- function(input) {
+
+      ## Cleanse the US samples for non-ASCII encoding, Twitter syntax (leveraged github:rimo0007)
+      ## Remove punctuation, numbers, stopwords, white space, and pornography
+      ## Convert word forms to lower case
+
+      ## Remove non-ASCII encoding
+
+      encodingASCII <- function(input, print=FALSE){
+          input <- lapply(input, function(row) iconv(row, "latin1", "ASCII", sub="")) 
+          return(unlist(input))
+      }
+
+      input = encodingASCII(paste(input))
+
+      ## Remove Twitter retweets, handles, http links, emoticons, hash tags, and URLs 
+
+      input <- gsub("(RT|via)((?:\\b\\W*@\\w+)+)", "", input)
+      input <- gsub("@\\w+", "", input)
+      input <- gsub("http\\w+", "", input)
+      input <- rm_emoticon(input)
+      input <- rm_hash(input)
+      input <- rm_url(input)
+
+      ## Convert input to a corpus and use tm to further cleanse
+
+      input_corpus <- VCorpus(VectorSource(input))
+      input_corpus <- tm_map(input_corpus, content_transformer(tolower), lazy = TRUE)
+      input_corpus <- tm_map(input_corpus, removePunctuation, lazy = TRUE)
+      input_corpus <- tm_map(input_corpus, removeNumbers, lazy = TRUE)
+
+      # Eliminate one-letter non-words, stopwords, and stemming
+      
+      cust_stop <- c("josh", "b", "c", "d", "e", "f", "g", "h", "j", "k", "l", "m", 
+               "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z")
+
+      # input_corpus <- tm_map(input_corpus, removeWords, c(stopwords("english"), cust_stop), lazy = TRUE) # old version
+      input_corpus <- tm_map(input_corpus, removeWords, c(cust_stop), lazy = TRUE)
+      # input_corpus <- tm_map(input_corpus, stemDocument, language = "english") # Added using SnowballC
+
+      # Finish by removing profanity and stripping white space
+
+      setwd(main_directory)
+      profanity_file <- file("profanity.txt", "r")
+      profanity_terms <- read.table(profanity_file, stringsAsFactors=F)
+      close(profanity_file)
+      profanity_filter <- c(profanity_terms[,1])
+      profanity_filter <- unique(profanity_filter)
+      input_corpus <- tm_map(input_corpus, removeWords, profanity_filter, lazy = TRUE)
+
+      input_corpus <- tm_map(input_corpus, stripWhitespace, lazy = TRUE)
+      input_corpus <- tm_map(input_corpus, PlainTextDocument, lazy = TRUE)
+      
+      # Convert corpus back into text vector
+      input <- data.frame(text=unlist(sapply(input_corpus, `[`, "content")), stringsAsFactors=F)
+      input <- as.character(input)
+    
+}
+
+```
+
+### 3. Prediction: Katz-Backoff (simple Markov Chain)
+
+This model is a basic IF:THEN "lookup" algorithm. If the user inputs a string of "go to the" (word length = 3), we seek to match this input against the left 3 words of the 4-gram frequency file. If matches are found, it prints the 3 matches with the highest frequency. If no matches are found, the left-most word of the input is parsed off, leaving "to the", which is looked up against the left-most two words of the 3-gram frequency file, and so on. If no match is found after testing the 2-gram, "NAs" are returned.
+
+The theory is that the longer the phrase and the highest-order of n-gram matched, the higher the relevance (or probability of being a correct prediction for the user). For instance, "go to the" as input, matching to "store" is more relevant than "the" matching to "pig". The words "go to" add more context, so a match with a 4-gram is considered more relevant than a single-word input matching to a 2-gram.
+
+
+```{r kbmc, echo=FALSE, warning = FALSE}
+
+## Predict using bigrams
+
+predict_word <- function(input) { 
+  
+    clean <- cleanse_input(input)  
+
+## Count length of initial input, limit to 3 words
+
+    clean_len <- str_count(clean, '\\w+') # input words
+
+## Katz-Backoff starts with n-gram, if not match, reduces input words until found
+## If not found, returns a "NA"
+
+    for (val in 1:3) { # Cycles at most from quad- to tri- to bi-gram
+    
+    ## 1st-tier if-then starts in 2-, 3-, 4-gram based on # input words
+    ##  Performs a lookup
+    ## 2nd-tier if-then checks if lookup returned anything
+    ##  If no response, it backs of (reduces input words, goes to lesser n-gram)
+    ##  If response, pulls in the top 3 matches (frequency) as the answer
+    ##    and Break, to exit the for loop
+        
+        if (clean_len >= 3) { 
+            quad_search <- paste("^", word(clean, -3, -1), " ", sep="")
+            quad_find <- quad[grep(quad_search, quad$ngram),] # find matches
+        
+            if (nrow(quad_find) != 0) { 
+                quad_find3 <- quad_find[1:3,] # select top 3 (highest prob)
+                quad_find3$ngram <- word(quad_find3$ngram, -1) # select last word
+                answer <- quad_find3$ngram
+                break
+            }   else clean_len <- 2
+        
+        }
+    
+        if (clean_len == 2) { 
+            tri_search <- paste("^", word(clean, -2, -1), " ", sep="")
+            tri_find <- tri[grep(tri_search, tri$ngram),] # find matches
+        
+            if (nrow(tri_find) != 0) { 
+                tri_find3 <- tri_find[1:3,] # select top 3 (highest prob)
+                tri_find3$ngram <- word(tri_find3$ngram, -1) # select last word
+                answer <- tri_find3$ngram
+                break
+            }   else clean_len <- 1
+        
+        }
+    
+        if (clean_len == 1) { 
+            bi_search <- paste("^", word(clean, -1), " ", sep="") 
+            bi_find <- bi[grep(bi_search, bi$ngram),] # find matches
+        
+            if (nrow(bi_find) != 0) { 
+                bi_find3 <- bi_find[1:3,] # select top 3 (highest prob)
+                bi_find3$ngram <- word(bi_find3$ngram, -1) # select last word
+                answer <- bi_find3$ngram
+                break
+            }   else answer <- "NA"
+        
+        }
+        
+            break
+    
+    }
+    print(paste("User Input: ", input))
+    print(paste("Answer: ", answer)) # print the original input
+    ## return(answer) # print the answer
+}    
+    
+# Example inputs
+
+predict_word("The guy in front of me just bought a pound of bacon, a bouquet, and a case of")
+predict_word("You're the reason why I smile everyday. Can you follow me please? It would mean the")
+predict_word("Hey sunshine, can you follow me and make me the")
+predict_word("Very early observations on the Bills game: Offense still struggling but the")
+predict_word("Go on a romantic date at the")
+predict_word("Well I'm pretty sure my granny has some old bagpipes in her garage I'll dust them off and be on my")
+predict_word("Ohhhh #PointBreak is on tomorrow. Love that film and haven't seen it in quite some")
+predict_word("After the ice bucket challenge Louis will push his long wet hair out of his eyes with his little")
+predict_word("Be grateful for the good times and keep the faith during the")
+predict_word("If this isn't the cutest thing you've ever seen, then you must be")
+
+predict_word("When you breathe, I want to be the air you. I'll be there for you, I'd live and I'd")
+predict_word("Guy at my table's wife got up to go to the bathroom and I asked about dessert and he started telling me about his")
+predict_word("I'd give anything to see arctic monkeys this")
+predict_word("Talking to your mom has the same effect as a hug and helps reduce your")
+predict_word("When you were in Holland you were like 1 inch away from me but you hadn't time to take a")
+predict_word("I'd just like all of these questions answered, a presentation of evidence, and a jury to settle the")
+predict_word("I can't deal with unsymetrical things. I can't even hold an uneven number of bags of groceries in each")
+predict_word("Every inch of you is perfect from the bottom to the")
+predict_word("I’m thankful my childhood was filled with imagination and bruises from playing")
+predict_word("I like how the same people are in almost all of Adam Sandler's")
+
+```

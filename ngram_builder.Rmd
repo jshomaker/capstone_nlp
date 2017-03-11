@@ -1,0 +1,361 @@
+---
+title: "JHDS ngram_builder.Rmd"
+author: "John Shomaker"
+date: "12/22/2016"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+### 1. Introduction
+
+This report is the first stage in the Johns Hopkins Data Science Capstone program. The Capstone focuses on the data science of natural language processing ("NLP"), leveraging the entire course's methodologies and learnings to disect the SwiftKey text dataset. SwiftKey is in the business of mobile applications and technologies, one of which is a feature that predicts type-ahead for mobile texters.
+
+The high-level challenge is to create a practical and reliable word prediction application in shiny, based on a cleaned dataset of text. The source text is a combination of large volumes of blogs, news articles, and Twitter posts (tweets).
+
+This particular document downloads, formats, cleans, and explores the data into a usable format, later used for constructing the predictive model and user application.
+
+```{r packages, warning = FALSE}
+
+## install.packages("tm") # used for corpus cleaning
+## install.packages("SnowballC") # shortcut for stemming in corpus
+## install.packages("qdapRegex") # shortcut to clean up twitter formats
+## install.packages("rJava")
+## install.packages("dplyr") # 'count' is a shortcut to group by frequency
+## install.packages("tidytext") # used to create n-grams
+## install.packages("data.table")
+## install.packages("NLP") # loaded with tm
+## install.packages("ggplot2") # used for plotting
+## install.packages("DT") # used to generate formatted tables
+## install.packages("stringi") # shortcut to word counting, etc.
+
+library(tm)
+library(SnowballC)
+library(qdapRegex)
+library(dplyr)
+library(tidytext)
+library(tidyr)
+library(data.table)
+library(NLP)
+library(ggplot2)
+library(DT)
+library(stringi)
+
+print(message("1 Packages Installed"))
+
+```
+
+### 2. SwiftKey Dataset
+
+We start by downloading the source data from:
+https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip
+
+And, we read the individual blogs, news, and Twitter data into their respective dataframes. The table below is a quick overview of the size, word count, lines, and sentence with the largest number of words.
+
+```{r download, warning = FALSE}
+
+## Set root directory for Capstone project
+main_folder <- "/Users/john/DropBox/JHDS/Capstone/"
+US_folder <- "/Users/john/DropBox/JHDS/Capstone/final/en_US/"
+
+## Download and unzip the SwiftKey file
+setwd(main_folder)
+fileURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+filename <- "swiftkey.zip"
+
+if (!file.exists(filename)){
+      download.file(fileURL, filename, method="curl")
+      unzip(filename)
+}      
+
+US_blogs <- readLines("final/en_US/en_US.blogs.txt", encoding = "UTF-8", skipNul = TRUE)
+US_news <- readLines("final/en_US/en_US.news.txt", encoding = "UTF-8", skipNul = TRUE)
+US_twitter <- readLines("final/en_US/en_US.twitter.txt", encoding = "UTF-8", skipNul = TRUE)
+
+print(message("2a Datasets Created"))
+
+## Count bytes, number of lines, words, and sentence with most words
+## Store in a summary table (.txt file)
+## stringi package shortcuts file analysis
+
+## File sizes
+US_news_size <- round(file.info("final/en_US/en_US.news.txt")$size / 1024 ^ 2, 
+            digits = 1)
+US_blogs_size <- round(file.info("final/en_US/en_US.blogs.txt")$size / 1024 ^ 2, 
+            digits = 1)
+US_twitter_size <- round(file.info("final/en_US/en_US.twitter.txt")$size / 1024 ^ 2, 
+            digits = 1)
+
+## Total words
+US_news_words <- stri_count_words(US_news)
+US_blogs_words <- stri_count_words(US_blogs)
+US_twitter_words <- stri_count_words(US_twitter)
+
+## Summary of US datasets
+US_summary <- data.frame(source = c("blogs", "news", "twitter"),
+           size.MB = c(US_blogs_size, US_news_size, US_twitter_size),
+           lines = c(length(US_blogs), length(US_news), length(US_twitter)),
+           words = c(sum(US_blogs_words), sum(US_news_words), sum(US_twitter_words)),
+           max.words = c(max(US_blogs_words), max(US_news_words), max(US_twitter_words)))
+
+## DT package shortcuts formatted table output
+datatable(US_summary)
+
+print(message("2b Datasets Summarized"))  
+    
+```
+
+### 3. Create Samples of US Datasets
+
+The three datasets are very large and would not be efficient enough for real-time prediction within a user application. As a result, we create random samples (binomial distribution), based on 2% each of the news and blogs data and 1% of the Twitter records. The samples targeted approximately 200,000 records each.
+
+```{r us_samples, warning = FALSE}
+
+## Randomly sample the US Twitter, blogs, and news files
+## Target 15K-25K sample per file
+## Save the samples as sample files (.txt)
+
+sampFile <- function(filename, prob) {
+
+    # Read in the file, sampled randomly using binomial function
+    inconnect <- file(paste(US_folder, "/en_US.", filename, ".txt",sep=""),"r")
+    file <- readLines(inconnect)
+    set.seed(999)
+    samp_file <- file[rbinom(n = length(file), size = 1, prob = prob) == 1]
+    close(inconnect)
+    
+    # Write out the sample file to the local file to save it
+    outconnect <- file(paste(US_folder, "/samp_en_US.", filename, ".txt",sep=""), "w")
+    writeLines(samp_file, con = outconnect)
+    close(outconnect)
+}
+
+sampFile("blogs", 0.2)
+sampFile("news", 0.2)
+sampFile("twitter", 0.1)
+
+rm(US_blogs, US_news, US_twitter) # Clear large, original datasets from memory
+gc() # Collect garbage
+
+setwd(US_folder)
+
+samp_US_blogs <- readLines("samp_en_US.blogs.txt")
+samp_US_news <- readLines("samp_en_US.news.txt")
+samp_US_twitter <- readLines("samp_en_US.twitter.txt")
+
+print(paste("Blog sample (# lines):", length(samp_US_blogs), sep=" "))
+print(paste("News sample (# lines):", length(samp_US_news), sep=" "))
+print(paste("Twitter sample (# lines):", length(samp_US_twitter), sep=" "))
+
+print(message("3 Samples Created"))
+
+```
+
+### 4. Data Cleansing
+
+In many respects, cleansing text is more complex than cleansing numerics. In researching various concepts, it also became clear that libraries and functions to cleanse text are rapidly evolving, so I utilized various libraries. What may have been a 5-line process in a previous library has, in several examples, been simplified to a 1-line command with more intuitive syntax.
+
+I first eliminated foreign language terms, then cleaned the various unique oddities of twitter text constructs. The next set of cleansing algorithms was accomplished with the 'tm' package, yet it only works with a corpus, a specialized text dataframe representing multiple text and metatags within a single dataset. Here's where I converted everything to lower case, eliminated punctuation and numbers, eliminated standard and a custom set of stopwords (e.g., single letters that are not words). I then eliminated profanity (against a standard list) and extra white spaces. NOTE: A very useful cleansing algorithm would be to remove words that are not in the English dictionary - although may be helpful to exclude commonly used Twitter abbreviations like 'LOL' and 'BFF'.
+
+```{r us_cleanse, warning = FALSE}
+
+## Cleanse the US samples for non-ASCII encoding, Twitter syntax (leveraged github:rimo0007)
+## Remove punctuation, numbers, stopwords, white space, and pornography
+## Convert word forms to lower case
+
+## Remove non-ASCII encoding
+samp_US_combined <- c(samp_US_blogs, samp_US_news, samp_US_twitter)
+encodingASCII <- function(inputData, print=FALSE){
+    inputData <- lapply(inputData, function(row) iconv(row, "latin1", "ASCII", sub="")) 
+    return(unlist(inputData))
+}
+
+samp_US_clean = encodingASCII(paste(samp_US_combined))
+
+## Remove Twitter retweets, handles, http links, emoticons, hash tags, and URLs 
+samp_US_clean <- gsub("(RT|via)((?:\\b\\W*@\\w+)+)", "", samp_US_clean)
+samp_US_clean <- gsub("@\\w+", "", samp_US_clean)
+samp_US_clean <- gsub("http\\w+", "", samp_US_clean)
+samp_US_clean <- rm_emoticon(samp_US_clean)
+samp_US_clean <- rm_hash(samp_US_clean)
+samp_US_clean <- rm_url(samp_US_clean)
+
+rm(samp_US_blogs, samp_US_news, samp_US_twitter) # Clear the sampled datasets from memory
+gc() # Collect garbage
+
+## Conver dataframe to a corpus and use tm to further cleanse
+US_corpus <- VCorpus(VectorSource(samp_US_clean))
+US_corpus <- tm_map(US_corpus, content_transformer(tolower), lazy = TRUE)
+US_corpus <- tm_map(US_corpus, removePunctuation, lazy = TRUE)
+US_corpus <- tm_map(US_corpus, removeNumbers, lazy = TRUE)
+
+
+
+
+# Eliminate one-letter non-words, stopwords, and stemming
+cust_stop <- c("josh", "b", "c", "d", "e", "f", "g", "h", "j", "k", "l", "m", 
+               "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z")
+
+# US_corpus <- tm_map(US_corpus, removeWords, c(stopwords("english"), cust_stop), lazy = TRUE)
+US_corpus <- tm_map(US_corpus, removeWords, c(cust_stop), lazy = TRUE) # old version
+# US_corpus <- tm_map(US_corpus, stemDocument, language = "english") # Added using SnowballC
+
+# Remove profanity
+
+setwd(main_folder)
+profanity_file <- file("profanity.txt", "r")
+profanity_terms <- read.table(profanity_file, stringsAsFactors=F)
+close(profanity_file)
+profanity_filter <- c(profanity_terms[,1])
+profanity_filter <- unique(profanity_filter)
+US_corpus <- tm_map(US_corpus, removeWords, profanity_filter, lazy = TRUE)
+
+# Remove words that aren't in english dictionary
+
+# dictionary_file <- file("dictionary.txt", "r")
+# dictionary_terms <- read.table(dictionary_file, stringsAsFactors=F)
+# close(dictionary_file)
+# dictionary_filter <- c(dictionary_terms[,1])
+# dictionary_filter <- unique(dictionary_filter)
+# US_corpus <- tm_map(US_corpus, removeWords, dictionary_filter, lazy = TRUE)
+
+# Finish by cleaning white space
+
+US_corpus <- tm_map(US_corpus, stripWhitespace, lazy = TRUE)
+US_corpus <- tm_map(US_corpus, PlainTextDocument, lazy = TRUE)
+
+rm(samp_US_clean, samp_US_combined) # Clear memory
+gc() # Collect garbage
+
+print(message("4 Cleansing Complete"))
+
+```
+
+### 5. ngram Exploration
+
+The tidytext library is a life-saver: very efficient and very simple for creating ngrams. I took the cleansed corpus, converted to a dataset, created 1-, 2-, 3-, and 4-gram datasets. NOTE: I also found using tidytext obviating the need for TextDocumentMatrix, etc. To generate the ngram frequencies, I simply leveraged 'dplyr' (or 'plyr' will work) and the 'count' function to group the ngrams into their respective frequency tables (akin to a histogram within the dataframe).
+
+I could then use the ngram frequency dataframes to plot frequency for each ngram-type and, for the unigrams, determine how many words are need to cover 50% and 90% of the corpus language. Frequency charts are below.
+
+```{r us_ngrams, warning = FALSE}
+
+## Ended up not using DocumentTermMatrix(US_corpus); good for 1-word analysis
+## Did not do sparsity analysis either: removeSparseTerms(US_dtm, .99)
+## Instead, convert corpus right into dataframe
+
+US_tidy <- data.frame(text=unlist(sapply(US_corpus, `[`, "content")), stringsAsFactors=F)
+
+## Create ngram datasets by tokenizing US_tidy dataset
+
+unigram <- US_tidy %>% unnest_tokens(ngram, text, token = "ngrams", n = 1)
+bigram <- US_tidy %>% unnest_tokens(ngram, text, token = "ngrams", n = 2)
+trigram <- US_tidy %>% unnest_tokens(ngram, text, token = "ngrams", n = 3)
+quadgram <- US_tidy %>% unnest_tokens(ngram, text, token = "ngrams", n = 4)
+
+## Create sorted frequency count tables from each tokenized dataset
+## Delete n-grams where frequency = 1
+
+unigram_ct <- unigram %>% count(ngram, sort = TRUE)
+bigram_ct <- bigram %>% count(ngram, sort = TRUE) 
+trigram_ct <- trigram %>% count(ngram, sort = TRUE) 
+quadgram_ct <- quadgram %>% count(ngram, sort = TRUE) 
+
+## Plot the top 25 ngrams for ngram = 1, 2, 3, 4
+
+unigram_ct %>%
+    top_n(25) %>%
+    mutate(ngram = reorder(ngram, n)) %>%
+    ggplot(aes(ngram, n)) +
+    geom_bar(stat = "identity") +
+    ggtitle("Most Common Unigrams") +
+    labs(y = "Frequency", x = "Unigram") +
+    coord_flip()
+
+bigram_ct %>%
+    top_n(25) %>%
+    mutate(ngram = reorder(ngram, n)) %>%
+    ggplot(aes(ngram, n)) +
+    geom_bar(stat = "identity") +
+    ggtitle("Most Common Bigrams") +
+    labs(y = "Frequency", x = "Bigrams") +
+    coord_flip()
+
+trigram_ct %>%
+    top_n(25) %>%
+    mutate(ngram = reorder(ngram, n)) %>%
+    ggplot(aes(ngram, n)) +
+    geom_bar(stat = "identity") +
+    ggtitle("Most Common Trigrams") +
+    labs(y = "Frequency", x = "Trigrams") +
+    coord_flip()
+
+quadgram_ct %>%
+    top_n(25) %>% 
+    mutate(ngram = reorder(ngram, n)) %>%
+    ggplot(aes(ngram, n)) +
+    geom_bar(stat = "identity") +
+    ggtitle("Most Common Quadgrams") +
+    labs(y = "Frequency", x = "Quadgrams") +
+    coord_flip()
+
+## Determine how many words required to achieve 50% an 90% of word usage
+## Find % and cumulative % usage for each word, based on declining frequency
+## Starts by eliminating words with freq = 1
+
+u_cover <- unigram_ct[unigram_ct$n > 1,]
+u_cover$word_num<-seq.int(nrow(u_cover))
+u_usage <- sum(u_cover$n)
+u_cover$pct <- round(u_cover$n/u_usage * 100, digits = 3)
+u_cover$cum <- round(cumsum(u_cover$pct), digits = 3)
+
+## Chart cumulative % usage of words for unigram words
+
+ggplot(data=u_cover, aes(u_cover$cum, u_cover$word_num)) +
+  geom_line() +
+  geom_vline(xintercept = 50, color="red") +
+  geom_vline(xintercept = 90, color="red") +
+  xlab("Coverage %") +
+  ylab("Word Count (Freq)") +
+  ylim(0, 12500) +
+  ggtitle("Word Count to Cover % Total Usage")
+
+print(message("5 ngram Analysis Done"))
+
+```
+
+### 6. Saved ngram Data
+
+I then write the ngram data to .txt files to be separately utilized by the prediction modeling phase and analysis.
+
+```{r ngramfiles, warning = FALSE, echo=FALSE}
+
+
+## Write n-gram count tables to file for fast retrieval in future model
+
+# write.table(unigram_ct, paste(US_folder,"unigram_ct.txt", sep = ""), sep="\t", row.names=FALSE)
+write.table(bigram_ct, paste(US_folder,"bigram_ct.txt", sep = ""), sep="\t", row.names=FALSE)
+write.table(trigram_ct, paste(US_folder,"trigram_ct.txt", sep = ""), sep="\t", row.names=FALSE)
+write.table(quadgram_ct, paste(US_folder,"quadgram_ct.txt", sep = ""), sep="\t", row.names=FALSE)
+
+## Eliminate n-grams with frequency count = 1 (no need to write the u) and write abbreviated
+
+# unigram_ct <- unigram_ct[!(unigram_ct$n == 1), ]
+bigram_ct <- bigram_ct[!(bigram_ct$n == 1), ]
+trigram_ct <- trigram_ct[!(trigram_ct$n == 1), ]
+quadgram_ct <- quadgram_ct[!(quadgram_ct$n == 1), ]
+
+# write.table(unigram_ct, paste(US_folder,"unigram_ctx.txt", sep = ""), sep="\t", row.names=FALSE)
+write.table(bigram_ct, paste(US_folder,"bigram_ctx.txt", sep = ""), sep="\t", row.names=FALSE)
+write.table(trigram_ct, paste(US_folder,"trigram_ctx.txt", sep = ""), sep="\t", row.names=FALSE)
+write.table(quadgram_ct, paste(US_folder,"quadgram_ctx.txt", sep = ""), sep="\t", row.names=FALSE)
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
