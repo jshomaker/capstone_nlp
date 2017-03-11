@@ -2,7 +2,7 @@
 
 This repository comprises all of the relevant scripts and files associated with the Johns Hopkins Data Science Capstone class. The Capstone resulted in a Shiny app and final presentation that enables an end-user to enter a word or phrase and the app predicts the "next word" (actually 5 alternatives) based on natural language processing (NLP) algorithms built in the Capstone. The prediction algorithm was based on word frequency (actually phrase frequency, called ngrams) determined as a function of millions of U.S. Twitter posts, U.S. blog sentences, and U.S. news sentences. In short, I utilized an ngram backoff methodology, sampled the raw data at approximately 10%, and eliminated the sparse examples (freq = 1). Much of the Capstone effort was spent learning about NLP and text cleaning tools, libraries, and methodologies.
 
-## File List
+## File List & Key URL Links
 
 ### Initial Cleansing & Report
 nlp_report1.Rmd: first version of data download, sampling, cleansing, and exploration  
