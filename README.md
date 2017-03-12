@@ -29,7 +29,7 @@ https://jshomaker1.shinyapps.io/nlp_predict2/ : URL to run the Shiny app
 profanity.txt: used for cleansing, both in the original model and for user input
 
 ### Final Report
-nlp_finalreport.Rmd: final capstone report
-nlp_finalreport.Html: report output
-http://rpubs.com/jshomaker/257919: final report on RPubs
+nlp_finalreport.Rmd: final capstone report  
+nlp_finalreport.Html: report output  
+http://rpubs.com/jshomaker/257919: final report on RPubs  
 
